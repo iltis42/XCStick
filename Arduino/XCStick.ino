@@ -31,7 +31,6 @@ enum e_button {
   JOY_PRESS
 };
 
-
 byte buttons[]={  // mapping array from definitions to set up the pins     button
 38,   // Button TOP_CENTER = upper middle button (QM)                         0
 10,   // Button RH_MIDDLE = upper RH button (ALT) Alternates & Flarm Radar    1
