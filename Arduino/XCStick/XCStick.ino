@@ -2,17 +2,23 @@
 #include <USB.h>
 #include <USBHIDKeyboard.h>
 #include "esp32-hal-cpu.h"
+#include <esp_task_wdt.h>
 
 // remote control for XCSoar, emulates a keyboard and mouse
 // hardware is just pushbuttons connected between GPIO pins and GND.
 // for each button press a keystroke or mouse action is sent
 
-const int key_repeat_interval{25};
-const int key_holddown_interval{8};
+const int key_repeat_interval{20};   // 20 ms
+const int key_holddown_interval{4};  // 4 mS debouncing
+const int very_long_press_interval{5000};  // 5 s for very long press, e.g. for restart
+int very_long_press_counter{0};
 int button_pressed{-1};
 int button_released{-1};
 int altMode{0};
 int qmMode{0};
+#define WDT_TIMEOUT 5
+
+
 long unsigned time_pressed{0};
 long unsigned time_released{0};
 boolean modeS2F{false};
@@ -30,6 +36,7 @@ enum e_button {
   JOY_DOWN,
   JOY_PRESS
 };
+
 
 byte buttons[]={  // mapping array from definitions to set up the pins     button
 38,   // Button TOP_CENTER = upper middle button (QM)                         0
@@ -49,6 +56,8 @@ int button_states[NUMBUTTONS+1];
 int button_holddown[NUMBUTTONS+1];
 
 void setup() {
+  // Serial.begin(115200);
+  delay(1000);
   for (byte set=0;set<=NUMBUTTONS;set++){  //setup of button pin hardware
     modeS2F = false;
     button_states[set] = 1;
@@ -57,12 +66,12 @@ void setup() {
     digitalWrite(buttons[set],HIGH);
   }
   // Wait a second since the HID drivers need a bit of time to re-mount
-  delay(1000);
-  Keyboard.begin();
+  esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
+  esp_task_wdt_add(NULL); //add current thread to WDT watch
   setCpuFrequencyMhz(80);
-  Serial.begin(115200);
-  delay(1000);
-  Serial.printf("Pushbutton Bounce library test: CPU: %f Mhz\n", (float)getCpuFrequencyMhz());
+  Keyboard.begin();
+  // delay(1000);
+  // Serial.printf("XCStick start: CPU: %f Mhz\n", (float)getCpuFrequencyMhz());
 }
 
 
@@ -71,6 +80,21 @@ void keyPressRepeat( int button, int key ) {
     Keyboard.press(key);
     Keyboard.release(key);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void keyPressRelase( int key ) {
     Keyboard.press(key);
@@ -111,7 +135,6 @@ void handleButton(int button_pressed, int button_released) {
           keyPressRelase(KEY_ESC);
           qmMode = 0;
         } 
-          // keyPressRelase('M');
     }   
     else if (button_pressed == STF) {
        if (modeS2F) {
@@ -143,10 +166,16 @@ void loop() {
         // bouncer[num].update();
         if (digitalRead(buttons[num]) == 0) {  // returns true if button is pressed
           button_pressed = num;
+          if( num == JOY_PRESS ){
+            very_long_press_counter++;
+            if( very_long_press_counter > 50 ){  // 10 seconds
+              Serial.printf("Hardware Reset\n");              
+              ESP.restart();
+            }
+          }
           if (button_holddown[num] == 0) {    
-             Serial.printf("P-In: %d\n", button_pressed );
+             // Serial.printf("Pressed: %d\n", button_pressed );
              handleButton(button_pressed, button_released);
-             // Serial.printf("P-Out: %d\n", button_pressed );
           } else {
             if( button_holddown[num] )
                button_holddown[num]--;
@@ -157,6 +186,9 @@ void loop() {
           }
         }
         else {
+          if( num == JOY_PRESS ){
+            very_long_press_counter = 0;
+          }
           if (button_states[num] == 0) {
              button_released = num;
              button_states[num] = 1;
@@ -166,5 +198,6 @@ void loop() {
           }
         }
   }
+  esp_task_wdt_reset();
   delay(key_repeat_interval);
 }
