@@ -1,15 +1,15 @@
-
 #include <USB.h>
 #include <USBHIDKeyboard.h>
 #include "esp32-hal-cpu.h"
 #include <esp_task_wdt.h>
+#include "esp32-hal-tinyusb.h"
 
 // remote control for XCSoar, emulates a keyboard and mouse
 // hardware is just pushbuttons connected between GPIO pins and GND.
 // for each button press a keystroke or mouse action is sent
 
 const int key_repeat_interval{20};   // 20 ms
-const int key_holddown_interval{4};  // 4 mS debouncing
+const int key_holddown_interval{8};  // 8 mS debouncing
 const int very_long_press_interval{5000};  // 5 s for very long press, e.g. for restart
 int very_long_press_counter{0};
 int button_pressed{-1};
@@ -17,7 +17,6 @@ int button_released{-1};
 int altMode{0};
 int qmMode{0};
 #define WDT_TIMEOUT 5
-
 
 long unsigned time_pressed{0};
 long unsigned time_released{0};
@@ -37,7 +36,6 @@ enum e_button {
   JOY_PRESS
 };
 
-
 byte buttons[]={  // mapping array from definitions to set up the pins     button
 38,   // Button TOP_CENTER = upper middle button (QM)                         0
 10,   // Button RH_MIDDLE = upper RH button (ALT) Alternates & Flarm Radar    1
@@ -50,7 +48,12 @@ byte buttons[]={  // mapping array from definitions to set up the pins     butto
 0     // Button JOY_PRESS = joystick press                                    8
 }; 
 
-#define NUMBUTTONS sizeof(buttons)//gives size of array *helps for adding buttons
+byte unused_buttons[]={  // mapping array from definitions to set up the pins of all unused I/O
+1,2,3,4,5,6,7,8,9,10,11,13,14
+}; 
+
+#define NUMBUTTONS sizeof(buttons)  //gives size of array *helps for adding buttons
+#define NUM_UNUSED_BUTTONS sizeof(unused_buttons)
 
 int button_states[NUMBUTTONS+1];
 int button_holddown[NUMBUTTONS+1];
@@ -58,12 +61,14 @@ int button_holddown[NUMBUTTONS+1];
 void setup() {
   // Serial.begin(115200);
   delay(1000);
+  modeS2F = false;
   for (byte set=0;set<=NUMBUTTONS;set++){  //setup of button pin hardware
-    modeS2F = false;
     button_states[set] = 1;
     button_holddown[set] = 0;
     pinMode(buttons[set],INPUT_PULLUP);
-    digitalWrite(buttons[set],HIGH);
+  }
+  for (byte set=0;set<=NUM_UNUSED_BUTTONS;set++){  //setup of button pin hardware
+    pinMode(buttons[set],INPUT_PULLUP);
   }
   // Wait a second since the HID drivers need a bit of time to re-mount
   esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
@@ -74,27 +79,11 @@ void setup() {
   // Serial.printf("XCStick start: CPU: %f Mhz\n", (float)getCpuFrequencyMhz());
 }
 
-
 void keyPressRepeat( int button, int key ) {
     // Serial.printf("Key button=%d, key=%d\n",button,key);
     Keyboard.press(key);
     Keyboard.release(key);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 void keyPressRelase( int key ) {
     Keyboard.press(key);
@@ -102,6 +91,7 @@ void keyPressRelase( int key ) {
 }
 
 void handleButton(int button_pressed, int button_released) {
+    // Serial.printf("pressed: %d released %d\n", button_pressed, button_released );
     if (button_pressed == JOY_UP) 
        keyPressRepeat( JOY_UP, KEY_UP_ARROW );
     else if (button_pressed == JOY_DOWN) 
@@ -110,7 +100,6 @@ void handleButton(int button_pressed, int button_released) {
        keyPressRepeat( JOY_RIGHT, KEY_RIGHT_ARROW );
     else if (button_pressed == JOY_LEFT)
        keyPressRepeat( JOY_LEFT, KEY_LEFT_ARROW );     
-
     else if (button_pressed == RH_MIDDLE){  // Round robin, first Alternates, second Flarm Radar
         if( altMode == 0 ){
           keyPressRelase(KEY_F6);  // Alternates
@@ -156,16 +145,16 @@ void handleButton(int button_pressed, int button_released) {
     }
 }
 
-
 void loop() {
    // Serial.printf("Button Loop\n" );
    for (int num=0;num<NUMBUTTONS;num++) {
-        // Serial.printf("Button %d loop\n" );
+        
         int button_pressed{-1};
         int button_released{-1};
         // bouncer[num].update();
         if (digitalRead(buttons[num]) == 0) {  // returns true if button is pressed
           button_pressed = num;
+          // Serial.printf("Button pressed: %d\n", button_pressed );
           if( num == JOY_PRESS ){
             very_long_press_counter++;
             if( very_long_press_counter > 50 ){  // 10 seconds
@@ -173,11 +162,11 @@ void loop() {
               ESP.restart();
             }
           }
-          if (button_holddown[num] == 0) {    
+          if (button_holddown[num] <= 0) {    
              // Serial.printf("Pressed: %d\n", button_pressed );
              handleButton(button_pressed, button_released);
           } else {
-            if( button_holddown[num] )
+            if( button_holddown[num] > 0 )
                button_holddown[num]--;
           }
           if (button_states[num] == 1) {
@@ -193,11 +182,11 @@ void loop() {
              button_released = num;
              button_states[num] = 1;
              button_holddown[num] = 0;
-             //Serial.printf("R: %d\n", button_released);
+             // Serial.printf("R: %d\n", button_released);
              handleButton(button_pressed, button_released);
           }
         }
-  }
-  esp_task_wdt_reset();
-  delay(key_repeat_interval);
+   }
+   esp_task_wdt_reset();
+   delay(key_repeat_interval);
 }
