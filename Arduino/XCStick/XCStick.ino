@@ -17,6 +17,7 @@ int button_released{-1};
 int altMode{0};
 int qmMode{0};
 #define WDT_TIMEOUT 5
+int idle_timer{0};
 
 long unsigned time_pressed{0};
 long unsigned time_released{0};
@@ -102,11 +103,16 @@ void handleButton(int button_pressed, int button_released) {
        keyPressRepeat( JOY_LEFT, KEY_LEFT_ARROW );     
     else if (button_pressed == RH_MIDDLE){  // Round robin, first Alternates, second Flarm Radar
         if( altMode == 0 ){
+          if( qmMode != 0 ){
+             keyPressRelase(KEY_ESC);
+             qmMode = 0;
+          }
           keyPressRelase(KEY_F6);  // Alternates
           altMode = 1;
         } else if ( altMode == 1 ) {
           keyPressRelase(KEY_ESC);
           altMode = 2;
+          qmMode = 0;
         } else if ( altMode == 2 ) {
           keyPressRelase(KEY_F4);  // Flarm Radar
           altMode = 3;
@@ -114,15 +120,21 @@ void handleButton(int button_pressed, int button_released) {
         else if ( altMode == 3 ) {
           keyPressRelase(KEY_ESC);
           altMode = 0;
+          qmMode = 0;
         }
     }
     else if (button_pressed == TOP_CENTER) {
         if( qmMode == 0 ){
+          if( altMode != 0 ){
+             keyPressRelase(KEY_ESC);
+             altMode = 0;
+          }
           keyPressRelase(KEY_F1);  // Quick Menu
           qmMode = 1;
         } else if ( qmMode == 1 ) {
           keyPressRelase(KEY_ESC);
           qmMode = 0;
+          altMode = 0;
         } 
     }   
     else if (button_pressed == STF) {
