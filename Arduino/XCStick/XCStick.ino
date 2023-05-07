@@ -8,12 +8,9 @@
 // hardware is just pushbuttons connected between GPIO pins and GND.
 // for each button press a keystroke or mouse action is sent
 
-const int key_repeat_interval{20};   // 20 ms
-const int key_holddown_interval{8};  // 8 mS debouncing
-const int very_long_press_interval{5000};  // 5 s for very long press, e.g. for restart
+const int key_repeat_interval{20};    // key repeat = 30 ms plus USBHID delay = 100 mS = 130 mS
+const int very_long_press_timeout{20};  // 5 s for very long press, e.g. for restart
 int very_long_press_counter{0};
-int button_pressed{-1};
-int button_released{-1};
 int altMode{0};
 int qmMode{0};
 #define WDT_TIMEOUT 5
@@ -57,15 +54,13 @@ byte unused_buttons[]={  // mapping array from definitions to set up the pins of
 #define NUM_UNUSED_BUTTONS sizeof(unused_buttons)
 
 int button_states[NUMBUTTONS+1];
-int button_holddown[NUMBUTTONS+1];
 
 void setup() {
   // Serial.begin(115200);
-  delay(1000);
+  // delay(1000);
   modeS2F = false;
   for (byte set=0;set<=NUMBUTTONS;set++){  //setup of button pin hardware
     button_states[set] = 1;
-    button_holddown[set] = 0;
     pinMode(buttons[set],INPUT_PULLUP);
   }
   for (byte set=0;set<=NUM_UNUSED_BUTTONS;set++){  //setup of button pin hardware
@@ -125,13 +120,13 @@ void handleButton(int button_pressed, int button_released) {
     }
     else if (button_pressed == TOP_CENTER) {
         if( qmMode == 0 ){
-          if( altMode != 0 ){
+          if( altMode ){
              keyPressRelase(KEY_ESC);
              altMode = 0;
           }
           keyPressRelase(KEY_F1);  // Quick Menu
           qmMode = 1;
-        } else if ( qmMode == 1 ) {
+        } else if ( qmMode != 0) {
           keyPressRelase(KEY_ESC);
           qmMode = 0;
           altMode = 0;
@@ -139,11 +134,11 @@ void handleButton(int button_pressed, int button_released) {
     }   
     else if (button_pressed == STF) {
        if (modeS2F) {
-         modeS2F = false;
+         modeS2F = 0;
          keyPressRelase('V');
        }
        else {
-         modeS2F = true;
+         modeS2F = 1;
          keyPressRelase('S');
        }
     }
@@ -151,6 +146,8 @@ void handleButton(int button_pressed, int button_released) {
        keyPressRelase(KEY_ESC);
        Keyboard.releaseAll();
        keyPressRelase(KEY_ESC);
+        altMode = 0;
+        qmMode = 0;
     }
     else if (button_pressed == JOY_PRESS) {
        keyPressRelase( KEY_RETURN );
@@ -158,47 +155,39 @@ void handleButton(int button_pressed, int button_released) {
 }
 
 void loop() {
-   // Serial.printf("Button Loop\n" );
-   for (int num=0;num<NUMBUTTONS;num++) {
-        
+   for (int num=0;num<NUMBUTTONS;num++) {    
         int button_pressed{-1};
         int button_released{-1};
-        // bouncer[num].update();
         if (digitalRead(buttons[num]) == 0) {  // returns true if button is pressed
           button_pressed = num;
-          // Serial.printf("Button pressed: %d\n", button_pressed );
+          // Serial.printf("Button num: %d\n", button_pressed );
           if( num == JOY_PRESS ){
             very_long_press_counter++;
-            if( very_long_press_counter > 50 ){  // 10 seconds
-              Serial.printf("Hardware Reset\n");              
-              ESP.restart();
-            }
+            // Serial.printf("very long press %d\n", very_long_press_counter );
+            if( very_long_press_counter > very_long_press_timeout ){
+              esp_restart();
+            } 
           }
-          if (button_holddown[num] <= 0) {    
-             // Serial.printf("Pressed: %d\n", button_pressed );
-             handleButton(button_pressed, button_released);
-          } else {
-            if( button_holddown[num] > 0 )
-               button_holddown[num]--;
-          }
+          // Serial.printf("Pressed: %d\n", button_pressed );
           if (button_states[num] == 1) {
-            button_states[num] = 0;
-            button_holddown[num] = key_holddown_interval;
+              button_states[num] = 0;
           }
-        }
-        else {
+          handleButton(button_pressed, button_released);
+          }
+        else {        // key not pressed
           if( num == JOY_PRESS ){
             very_long_press_counter = 0;
           }
           if (button_states[num] == 0) {
              button_released = num;
              button_states[num] = 1;
-             button_holddown[num] = 0;
              // Serial.printf("R: %d\n", button_released);
              handleButton(button_pressed, button_released);
           }
         }
    }
-   esp_task_wdt_reset();
    delay(key_repeat_interval);
+   if( very_long_press_counter < very_long_press_timeout ){   // last resort, if restart doesn't trigger, second chance is WDT
+      esp_task_wdt_reset();
+   }  
 }
