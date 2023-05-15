@@ -9,7 +9,7 @@
 // for each button press a keystroke or mouse action is sent
 
 const int key_repeat_interval {
-  20
+  200
 };    // key repeat = 30 ms plus USBHID delay = 100 mS = 130 mS
 const int very_long_press_timeout {
   20
