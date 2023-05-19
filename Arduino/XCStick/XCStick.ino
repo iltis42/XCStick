@@ -3,23 +3,29 @@
 #include "esp32-hal-cpu.h"
 #include <esp_task_wdt.h>
 #include "esp32-hal-tinyusb.h"
+#include <AceButton.h>
 
-// remote control for XCSoar, emulates a keyboard and mouse
+// OTA includes
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <WiFiAP.h>
+#include <WebServer.h>
+#include "Update.h"
+#include <USB.h>
+#include <USBHIDKeyboard.h>
+#include "esp32-hal-cpu.h"
+#include <esp_task_wdt.h>
+
+using namespace ace_button;
+
+// remote control for XCSoar, emulates a keyboard
 // hardware is just pushbuttons connected between GPIO pins and GND.
-// for each button press a keystroke or mouse action is sent
+// for each button press a keystroke is sent
 
-const int key_repeat_interval {
-  200
-};    // key repeat = 30 ms plus USBHID delay = 100 mS = 130 mS
-const int very_long_press_timeout {
-  20
-};  // 5 s for very long press, e.g. for restart
-int very_long_press_counter{0};
-int altMode{0};
-int qmMode{0};
 #define WDT_TIMEOUT 5
 
-boolean modeS2F{false};
+boolean modeS2F{ false };
+bool joy_pressed{ false };
 
 USBHIDKeyboard Keyboard;
 
@@ -35,158 +41,250 @@ enum e_button {
   JOY_PRESS
 };
 
-byte buttons[] = { // mapping array from definitions to set up the pins          button
-  38,   // Button TOP_CENTER = upper middle button (QM)                         0
-  10,   // Button RH_MIDDLE = upper RH button (ALT) Alternates & Flarm Radar    1
-  12,   // Button RH_LOWER = lower right hand button                            2
-  37,   // Button STF = STF switch, external to PCB                             3
-  35,   // Button JOY_UP = joystick up                                          4
-  33,   // Button JOY_LEFT = joystick left                                      5
-  34,   // Button JOY_RIGHT = joystick right                                    6
-  36,   // Button JOY_DOWN = joystick down                                      7
-  0     // Button JOY_PRESS = joystick press                                    8
+enum e_button_table { 
+  PIN,
+  ID,
+  FIRST,
+  SECOND,
+  THIRD,
+  FOUR,
+  LONG 
 };
 
-byte unused_buttons[] = { // mapping array from definitions to set up the pins of all unused I/O
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14
+const byte button_table[][7] = {
+//  I/O Button      key first press   second    third   fourth press, keylongPress
+  { 38, TOP_CENTER, KEY_F1,           KEY_ESC,  0,      0,            KEY_ESC },
+  { 10, RH_MIDDLE,  KEY_F6,           KEY_ESC,  KEY_F4, KEY_ESC,      KEY_ESC },
+  { 12, RH_LOWER,   KEY_ESC,          0,        0,      0,            KEY_ESC },
+  { 37, STF,        'S',              'V',      0,      0,            0 },
+  { 35, JOY_UP,     KEY_UP_ARROW,     0,        0,      0,            0 },
+  { 33, JOY_LEFT,   KEY_LEFT_ARROW,   0,        0,      0,            0 },
+  { 34, JOY_RIGHT,  KEY_RIGHT_ARROW,  0,        0,      0,            0 },
+  { 36, JOY_DOWN,   KEY_DOWN_ARROW,   0,        0,      0,            0 },
+  { 0, JOY_PRESS,   KEY_RETURN,       0,        0,      0,            0 }
 };
 
-#define NUMBUTTONS sizeof(buttons)  //gives size of array *helps for adding buttons
+byte unused_buttons[] = {  // mapping array from definitions to set up the pins of all unused I/O
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 14, 21, 45, 46
+};
+
+#define NUMBUTTONS 9  //gives size of array *helps for adding buttons
 #define NUM_UNUSED_BUTTONS sizeof(unused_buttons)
 
-int button_states[NUMBUTTONS + 1];
+AceButton buttons[NUMBUTTONS];
+unsigned int activations[NUMBUTTONS];
+void handleButtonEvent(AceButton*, uint8_t, uint8_t);
+bool OTAmode{false};
+
+const char* ssid = "XCStick20";
+const char* password = "xcstick20";
+
+WebServer server(80);
+
+const char* indexHtml =
+    "<body style='font-family: Verdana,sans-serif; font-size: 14px;'>"
+    "<meta name='viewport' content='width=>device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no' />"
+    "<div style='width:320px;padding:20px;border-radius:10px;border:solid 2px #e0e0e0;margin:auto;margin-top:20px;'>"
+    "<div style='width:100%;text-align:center;font-size:18px;font-weight:bold;margin-bottom:12px;'>XCStick OTA SW Update</div>"
+       "<form method='POST' action='#' enctype='multipart/form-data' id='upload-form' style='width:100%;margin-bottom:8px;'>"
+         "<input type='file' name='update'>"
+         "<input type='submit' value='Update' style='float:right;'>"
+       "</form>"
+    "<div style='width:100%;background-color:#e0e0e0;border-radius:8px;'>"
+    "<div id='prg' style='width:0%;background-color:#2196F3;padding:2px;border-radius:8px;color:white;text-align:center;'>0%</div>"
+    "</div>"
+    "</div>"
+    "</body>"
+    "<script>"
+    "var prg = document.getElementById('prg');"
+    "var form = document.getElementById('upload-form');"
+    "form.addEventListener('submit', e=>{"
+         "e.preventDefault();"
+         "var data = new FormData(form);"
+         "var req = new XMLHttpRequest();"
+         "req.open('POST', '/');"  
+         "req.upload.addEventListener('progress', p=>{"
+              "let w = Math.round((p.loaded / p.total)*100) + '%';"
+              "if(p.lengthComputable){"
+                   "prg.innerHTML = w;"
+                   "prg.style.width = w;"
+              "}"
+              "if(w == '100%'){ prg.style.backgroundColor = '#04AA6D'; }" 
+         "});"
+         "req.send(data);"
+     "});"
+    "</script>";
+
+void ESPS2OTA(WebServer *server){
+  static WebServer *_server = server;
+  //Returns index.html page
+  _server->on("/", HTTP_GET, [&]() {
+    _server->sendHeader("Connection", "close");
+    _server->send(200, "text/html", indexHtml);
+  });
+
+  /*handling uploading firmware file */
+  _server->on("/", HTTP_POST, [&]() {
+    _server->sendHeader("Connection", "close");
+    _server->send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+  }, [&]() {
+    HTTPUpload& upload = _server->upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      Serial.printf("Update: %s\n", upload.filename.c_str());
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { //start with max available size
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      /* flashing firmware to ESP*/
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) { //true to set the size to the current progress
+        Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+        delay(1000);
+        ESP.restart();
+      } else {
+        Update.printError(Serial);
+      }
+    }
+  });
+}
 
 void setup() {
-  modeS2F = false;
-  for (byte set = 0; set <= NUMBUTTONS; set++) { //setup of button pin hardware
-    button_states[set] = 1;
-    pinMode(buttons[set], INPUT_PULLUP);
+  Serial.begin(115200);
+  for (byte b = 0; b < NUMBUTTONS; b++) {  //setup of button pin hardware
+    pinMode(button_table[b][PIN], INPUT_PULLUP);
   }
-  for (byte set = 0; set <= NUM_UNUSED_BUTTONS; set++) { //setup of button pin hardware
-    pinMode(buttons[set], INPUT_PULLUP);
+  if( digitalRead( button_table[TOP_CENTER][PIN] ) == 0 ){
+    delay(1000);
+    setCpuFrequencyMhz(160);      
+    Serial.println("OTA mode startup");
+    WiFi.mode(WIFI_AP);  
+    WiFi.softAP(ssid, password);
+    delay(1000);
+    IPAddress IP = IPAddress (10, 10, 10, 1);
+    IPAddress NMask = IPAddress (255, 255, 255, 0);
+    WiFi.softAPConfig(IP, IP, NMask);
+    IPAddress myIP = WiFi.softAPIP();
+    Serial.print("OTA AP IP address: ");
+    Serial.println(myIP); 
+    /* SETUP YOR WEB OWN ENTRY POINTS */
+    server.on("/test", HTTP_GET, []() {
+      server.sendHeader("Connection", "close");
+      server.send(200, "text/plain", "Hello test 123!");
+    });
+    ESPS2OTA(&server);
+    server.begin();
+    Keyboard.begin();
+    Serial.printf("XCStick OTA mode started: CPU: %f Mhz restart cause %d\n", (float)getCpuFrequencyMhz(), esp_reset_reason() );
+    esp_task_wdt_init(WDT_TIMEOUT, true);  // enable panic so ESP32 restarts
+    esp_task_wdt_add(NULL);                // add current thread to WDT watch
+    OTAmode = true;
   }
-  // Wait a second since the HID drivers need a bit of time to re-mount
-  esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
-  esp_task_wdt_add(NULL); //add current thread to WDT watch
-  setCpuFrequencyMhz(80);
-  Keyboard.begin();
-  // delay(1000);
-  // Serial.printf("XCStick start: CPU: %f Mhz\n", (float)getCpuFrequencyMhz());
-}
-
-void keyPressRepeat( int button, int key ) {
-  // Serial.printf("Key button=%d, key=%d\n",button,key);
-  Keyboard.press(key);
-  Keyboard.release(key);
-}
-
-void keyPressRelase( int key ) {
-  Keyboard.press(key);
-  Keyboard.release(key);
-}
-
-void handleButton(int button_pressed, int button_released) {
-  // Serial.printf("pressed: %d released %d\n", button_pressed, button_released );
-  if (button_pressed == JOY_UP)
-    keyPressRepeat( JOY_UP, KEY_UP_ARROW );
-  else if (button_pressed == JOY_DOWN)
-    keyPressRepeat( JOY_DOWN, KEY_DOWN_ARROW );
-  else if (button_pressed == JOY_RIGHT)
-    keyPressRepeat( JOY_RIGHT, KEY_RIGHT_ARROW );
-  else if (button_pressed == JOY_LEFT)
-    keyPressRepeat( JOY_LEFT, KEY_LEFT_ARROW );
-  else if (button_pressed == RH_MIDDLE) { // Round robin, first Alternates, second Flarm Radar
-    if ( altMode == 0 ) {
-      if ( qmMode != 0 ) {
-        keyPressRelase(KEY_ESC);
-        qmMode = 0;
-      }
-      keyPressRelase(KEY_F6);  // Alternates
-      altMode = 1;
-    } else if ( altMode == 1 ) {
-      keyPressRelase(KEY_ESC);
-      altMode = 2;
-      qmMode = 0;
-    } else if ( altMode == 2 ) {
-      keyPressRelase(KEY_F4);  // Flarm Radar
-      altMode = 3;
+  else {
+    delay(1000);
+    Serial.println("Keyboard Mode");
+    setCpuFrequencyMhz(80);                // save energy, its far enough
+    modeS2F = false;
+    ButtonConfig* buttonConfig = ButtonConfig::getSystemButtonConfig();
+    buttonConfig->setEventHandler(handleButtonEvent);
+    buttonConfig->setFeature(ButtonConfig::kFeatureLongPress);
+    for (byte b = 0; b < NUMBUTTONS; b++) {  //setup of button pin hardware
+      buttons[b].init(button_table[b][PIN], HIGH, b);
     }
-    else if ( altMode == 3 ) {
-      keyPressRelase(KEY_ESC);
-      altMode = 0;
-      qmMode = 0;
+    // Serial.println("Init unsed buttons");
+    for (byte b = 0; b < NUM_UNUSED_BUTTONS; b++) {  //setup of button pin hardware
+      pinMode(unused_buttons[b], INPUT_PULLUP);
     }
-  }
-  else if (button_pressed == TOP_CENTER) {
-    if ( qmMode == 0 ) {
-      if ( altMode ) {
-        keyPressRelase(KEY_ESC);
-        altMode = 0;
-      }
-      keyPressRelase(KEY_F1);  // Quick Menu
-      qmMode = 1;
-    } else if ( qmMode != 0) {
-      keyPressRelase(KEY_ESC);
-      qmMode = 0;
-      altMode = 0;
-    }
-  }
-  else if (button_pressed == STF) {
-    if (modeS2F) {
-      modeS2F = false;
-      keyPressRelase('V');
-    }
-    else {
-      modeS2F = true;
-      keyPressRelase('S');
-    }
-  }
-  else if (button_pressed == RH_LOWER) {
-    keyPressRelase(KEY_ESC);
-    Keyboard.releaseAll();
-    keyPressRelase(KEY_ESC);
-    altMode = 0;
-    qmMode = 0;
-  }
-  else if (button_pressed == JOY_PRESS) {
-    keyPressRelase( KEY_RETURN );
+    Keyboard.begin();
+    delay(1000);
+    Serial.printf("XCStick kbd started: CPU: %f Mhz restart cause %d\n", (float)getCpuFrequencyMhz(), esp_reset_reason() );
+    esp_task_wdt_init(WDT_TIMEOUT, true);  // enable panic so ESP32 restarts
+    esp_task_wdt_add(NULL);                // add current thread to WDT watch
   }
 }
 
 void loop() {
-  for (int num = 0; num < NUMBUTTONS; num++) {
-    int button_pressed{ -1};
-    int button_released{ -1};
-    if (digitalRead(buttons[num]) == 0) {  // returns true if button is pressed
-      button_pressed = num;
-      // Serial.printf("Button num: %d\n", button_pressed );
-      if ( num == JOY_PRESS ) {
-        very_long_press_counter++;
-        // Serial.printf("very long press %d\n", very_long_press_counter );
-        if ( very_long_press_counter > very_long_press_timeout ) {
-          esp_restart();
-        }
-      }
-      // Serial.printf("Pressed: %d\n", button_pressed );
-      if (button_states[num] == 1) {
-        button_states[num] = 0;
-      }
-      handleButton(button_pressed, button_released);
-    }
-    else {        // key not pressed
-      if ( num == JOY_PRESS ) {
-        very_long_press_counter = 0;
-      }
-      if (button_states[num] == 0) {
-        button_released = num;
-        button_states[num] = 1;
-        // Serial.printf("R: %d\n", button_released);
-        handleButton(button_pressed, button_released);
-      }
+  if( OTAmode ){
+    server.handleClient();
+  }else{
+    for (int i = 0; i < NUMBUTTONS; i++) {
+      buttons[i].check();
     }
   }
-  delay(key_repeat_interval);
-  if ( very_long_press_counter < very_long_press_timeout ) { // last resort, if restart doesn't trigger, second chance is WDT
-     esp_task_wdt_reset();
+  delay(4);
+  if ( digitalRead( button_table[RH_LOWER][PIN] ) ){  // ESC button long press for watchdog expiry and restart
+      esp_task_wdt_reset();
+  }
+}
+
+void release(byte key1, byte key2, byte key3, byte key4, byte keyL=0) {
+  Keyboard.release(key1);
+  if (key2)                 // is there a long press key ?
+    Keyboard.release(key2);  // yep -> release
+  if (key3)                 // is there a long press key ?
+    Keyboard.release(key3);  // yep -> release
+  if (key4)                 // is there a long press key ?
+    Keyboard.release(key4);  // yep -> release
+  if (keyL) 
+    Keyboard.release(keyL);
+}
+
+void handleButtonEvent(AceButton* button, uint8_t eventType, uint8_t state) {
+  Serial.printf("Button: %d evt: %d\n", button->getId(), eventType);
+  int id = button->getId();
+  byte key1 = button_table[id][FIRST];
+  byte key2 = button_table[id][SECOND];
+  byte key3 = button_table[id][THIRD];
+  byte key4 = button_table[id][FOUR];
+  byte keyL = button_table[id][LONG];
+
+  int modul = 1;
+  if (key2)
+    modul++;
+  if (key3)
+    modul++;
+  if (key4)
+    modul++;
+
+  switch (eventType) {
+    case AceButton::kEventPressed:
+      if (button_table[id][ID] == JOY_PRESS)
+        joy_pressed = true;
+      
+      if (activations[id] % modul == 0) {
+        Keyboard.press(key1);
+      } else if (key2 && activations[id] % modul == 1) {
+        Keyboard.press(key2);
+      } else if (key3 && activations[id] % modul == 2) {
+        Keyboard.press(key3);
+      } else if (key4 && activations[id] % modul == 3) {
+        Keyboard.press(key4);
+      }
+      activations[id]++;
+      if (activations[id] >= modul)
+        activations[id] = 0;
+      break;
+
+    case AceButton::kEventReleased:
+      if (button_table[id][ID] == JOY_PRESS)
+        joy_pressed = false;
+      release(key1,key2,key3,key4,keyL);
+      if (button_table[id][FIRST] == KEY_ESC){
+        for (byte b = 0; b < NUMBUTTONS; b++) {
+           activations[b] = 0;
+         }
+      }
+      break;
+
+    case AceButton::kEventLongPressed:
+      if (keyL) {
+        release(key1,key2,key3,key4);
+        Keyboard.press(KEY_ESC);    // return from previous screen
+        Keyboard.release(KEY_ESC);  // release ESC key
+        Keyboard.press(keyL);       // key for long press action is pressed
+      }
+      break;
   }
 }
