@@ -1,5 +1,3 @@
-#include <USB.h>
-#include <USBHIDKeyboard.h>
 #include "esp32-hal-cpu.h"
 #include <esp_task_wdt.h>
 #include "esp32-hal-tinyusb.h"
@@ -132,17 +130,19 @@ void ESPS2OTA(WebServer *server){
     if (upload.status == UPLOAD_FILE_START) {
       Serial.printf("Update: %s\n", upload.filename.c_str());
       if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { //start with max available size
+        Serial.printf("Error at start\n");
         Update.printError(Serial);
       }
     } else if (upload.status == UPLOAD_FILE_WRITE) {
       /* flashing firmware to ESP*/
-      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      Serial.printf("Flashing: %u bytes\n", upload.currentSize);
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) { 
         Update.printError(Serial);
       }
     } else if (upload.status == UPLOAD_FILE_END) {
       if (Update.end(true)) { //true to set the size to the current progress
-        Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
-        delay(1000);
+        Serial.printf("Update Success: %u bytes\nRebooting...\n", upload.totalSize);
+        delay(2000);
         ESP.restart();
       } else {
         Update.printError(Serial);
@@ -160,8 +160,8 @@ void setup() {
     delay(1000);
     setCpuFrequencyMhz(160);      
     Serial.println("OTA mode startup");
-    WiFi.mode(WIFI_AP);
-    WiFi.setTxPower(WIFI_POWER_2dBm);
+    WiFi.mode(WIFI_AP);  
+    WiFi.setTxPower(WIFI_POWER_5dBm);
     WiFi.softAP(ssid, password);
     delay(1000);
     IPAddress IP = IPAddress (10, 10, 10, 1);
@@ -179,11 +179,11 @@ void setup() {
     server.begin();
     Keyboard.begin();
     Serial.printf("XCStick OTA mode started: CPU: %f Mhz restart cause %d\n", (float)getCpuFrequencyMhz(), esp_reset_reason() );
-    esp_task_wdt_init(WDT_TIMEOUT, true);  // enable panic so ESP32 restarts
-    esp_task_wdt_add(NULL);                // add current thread to WDT watch
+    // esp_task_wdt_init(WDT_TIMEOUT*6, true);  // enable panic so ESP32 restarts, need more tolerance as of flashing
+    // esp_task_wdt_add(NULL);                  // add current thread to WDT watch
     OTAmode = true;
   }
-  else {
+  else { esp_task_wdt_reset();
     delay(1000);
     Serial.println("Keyboard Mode");
     setCpuFrequencyMhz(80);                // save energy, its far enough
@@ -206,6 +206,7 @@ void setup() {
   }
 }
 
+int restart = 0;
 void loop() {
   if( OTAmode ){
     server.handleClient();
@@ -214,10 +215,15 @@ void loop() {
       buttons[i].check();
     }
   }
-  delay(4);
+  delay(5);
   if ( digitalRead( button_table[RH_LOWER][PIN] ) ){  // ESC button long press for watchdog expiry and restart
       esp_task_wdt_reset();
+      restart = 0;
+  }else{
+    restart++;
   }
+  if( restart > 2000 )
+     ESP.restart();
 }
 
 void release(byte key1, byte key2, byte key3, byte key4, byte keyL=0) {
