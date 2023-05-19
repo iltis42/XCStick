@@ -179,8 +179,6 @@ void setup() {
     server.begin();
     Keyboard.begin();
     Serial.printf("XCStick OTA mode started: CPU: %f Mhz restart cause %d\n", (float)getCpuFrequencyMhz(), esp_reset_reason() );
-    // esp_task_wdt_init(WDT_TIMEOUT*6, true);  // enable panic so ESP32 restarts, need more tolerance as of flashing
-    // esp_task_wdt_add(NULL);                  // add current thread to WDT watch
     OTAmode = true;
   }
   else { esp_task_wdt_reset();
