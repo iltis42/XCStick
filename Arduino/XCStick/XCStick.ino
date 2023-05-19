@@ -160,7 +160,8 @@ void setup() {
     delay(1000);
     setCpuFrequencyMhz(160);      
     Serial.println("OTA mode startup");
-    WiFi.mode(WIFI_AP);  
+    WiFi.mode(WIFI_AP);
+    WiFi.setTxPower(WIFI_POWER_2dBm);
     WiFi.softAP(ssid, password);
     delay(1000);
     IPAddress IP = IPAddress (10, 10, 10, 1);
