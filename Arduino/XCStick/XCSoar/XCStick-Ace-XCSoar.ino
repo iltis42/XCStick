@@ -1,7 +1,8 @@
+
 #include "esp32-hal-cpu.h"
 #include <esp_task_wdt.h>
 #include "esp32-hal-tinyusb.h"
-#include <AceButton.h>
+#include <AceButton.h>   // Version AceButton 1.9.2
 
 // OTA includes
 #include <WiFi.h>
@@ -160,6 +161,7 @@ void setup() {
     delay(1000);
     setCpuFrequencyMhz(160);      
     Serial.println("OTA mode startup");
+    delay(1000);
     WiFi.mode(WIFI_AP);  
     WiFi.setTxPower(WIFI_POWER_5dBm);
     WiFi.softAP(ssid, password);
@@ -181,9 +183,11 @@ void setup() {
     Serial.printf("XCStick OTA mode started: CPU: %f Mhz restart cause %d\n", (float)getCpuFrequencyMhz(), esp_reset_reason() );
     OTAmode = true;
   }
-  else { esp_task_wdt_reset();
+  else { 
+    esp_task_wdt_reset();
     delay(1000);
     Serial.println("Keyboard Mode");
+    delay(1000);
     setCpuFrequencyMhz(80);                // save energy, its far enough
     modeS2F = false;
     ButtonConfig* buttonConfig = ButtonConfig::getSystemButtonConfig();
@@ -199,8 +203,12 @@ void setup() {
     Keyboard.begin();
     delay(1000);
     Serial.printf("XCStick kbd started: CPU: %f Mhz restart cause %d\n", (float)getCpuFrequencyMhz(), esp_reset_reason() );
-    esp_task_wdt_init(WDT_TIMEOUT, true);  // enable panic so ESP32 restarts
-    esp_task_wdt_add(NULL);                // add current thread to WDT watch
+    esp_task_wdt_config_t config = {
+      .timeout_ms = 5 * 1000,
+      .trigger_panic = true,
+    };
+    esp_task_wdt_init(&config);  // enable panic so ESP32 restarts
+    esp_task_wdt_add(NULL);     // add current thread to WDT watch
   }
 }
 
